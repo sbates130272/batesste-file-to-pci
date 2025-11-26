@@ -1,0 +1,57 @@
+name: lint
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'kernel/**'
+      - 'user/**'
+      - 'include/**'
+
+jobs:
+  c-lint:
+    name: C Linting
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4.2.2
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cppcheck \
+            clang-tidy \
+            sparse \
+            gcc
+
+      - name: Run cppcheck on kernel module
+        run: |
+          cppcheck --enable=all --suppress=missingIncludeSystem \
+            --suppress=unusedFunction \
+            --suppress=unmatchedSuppression \
+            --suppress=uninitvar \
+            --suppress=uninitMemberVar \
+            kernel/file_to_pcie.c || true
+
+      - name: Run cppcheck on userspace program
+        run: |
+          cppcheck --enable=all --suppress=missingIncludeSystem \
+            --suppress=unusedFunction \
+            --suppress=unmatchedSuppression \
+            user/test_file_to_pcie.c || true
+
+      - name: Check userspace program syntax
+        run: |
+          gcc -Iinclude -fsyntax-only -Wall -Wextra \
+            -Wno-unused-parameter -Wno-unused-variable \
+            user/test_file_to_pcie.c 2>&1 | head -50 || true
+
+      - name: Check header file syntax
+        run: |
+          gcc -Iinclude -fsyntax-only -Wall -Wextra \
+            -D__KERNEL__ include/file_to_pcie.h 2>&1 | head -20 || true
+          gcc -Iinclude -fsyntax-only -Wall -Wextra \
+            include/file_to_pcie.h 2>&1 | head -20 || true

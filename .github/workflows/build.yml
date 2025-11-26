@@ -1,0 +1,206 @@
+name: build
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'kernel/**'
+      - 'user/**'
+      - 'include/**'
+      - 'Makefile'
+
+jobs:
+  build:
+    name: Build Kernel Module and Userspace Code
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4.2.2
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            gcc \
+            make
+
+      - name: Install latest stable kernel headers
+        id: kernel_headers
+        run: |
+          echo "Installing latest stable kernel headers..."
+          
+          # Install linux-headers-generic which provides the latest stable kernel headers
+          sudo apt-get install -y linux-headers-generic || {
+            echo "::error::Failed to install linux-headers-generic"
+            echo "Available kernel headers packages:"
+            apt-cache search linux-headers-generic
+            exit 1
+          }
+          
+          # Find the generic kernel version that linux-headers-generic depends on
+          # This ensures we get generic headers, not Azure/cloud-specific ones
+          GENERIC_KERNEL=$(apt-cache depends linux-headers-generic 2>/dev/null | \
+                           grep "Depends: linux-headers-" | grep -v generic | \
+                           head -1 | awk '{print $2}' | sed 's/linux-headers-//')
+          
+          if [ -n "$GENERIC_KERNEL" ]; then
+            echo "Found generic kernel version from linux-headers-generic: $GENERIC_KERNEL"
+            STABLE_KERNEL="$GENERIC_KERNEL"
+          else
+            # Fallback: find any installed kernel headers (prefer non-Azure)
+            STABLE_KERNEL=$(dpkg -l | grep '^ii.*linux-headers-[0-9]' | \
+                            grep -v generic | grep -v azure | grep -v cloud | \
+                            head -1 | awk '{print $2}' | sed 's/linux-headers-//')
+            
+            if [ -z "$STABLE_KERNEL" ]; then
+              STABLE_KERNEL=$(dpkg -l | grep '^ii.*linux-headers-[0-9]' | \
+                              grep -v generic | head -1 | awk '{print $2}' | \
+                              sed 's/linux-headers-//')
+            fi
+          fi
+          
+          if [ -z "$STABLE_KERNEL" ]; then
+            echo "::error::Could not determine stable kernel version"
+            dpkg -l | grep linux-headers
+            exit 1
+          fi
+          
+          # Install both the common headers and the architecture-specific generic headers
+          # linux-headers-${STABLE_KERNEL} contains common headers
+          # linux-headers-${STABLE_KERNEL}-generic contains architecture-specific headers
+          echo "Installing kernel headers packages:"
+          sudo apt-get install -y \
+            "linux-headers-${STABLE_KERNEL}" \
+            "linux-headers-${STABLE_KERNEL}-generic" || {
+            echo "::error::Failed to install kernel headers packages"
+            exit 1
+          }
+          
+          # Verify genhd.h exists (for kernels < 6.8) or disk_to_dev in blkdev.h (for kernels >= 6.8)
+          # Our code uses LINUX_VERSION_CODE to conditionally include genhd.h
+          GENHD_PATH=""
+          if [ -f "/usr/src/linux-headers-${STABLE_KERNEL}-generic/include/linux/genhd.h" ]; then
+            GENHD_PATH="/usr/src/linux-headers-${STABLE_KERNEL}-generic/include/linux/genhd.h"
+          elif [ -f "/usr/src/linux-headers-${STABLE_KERNEL}/include/linux/genhd.h" ]; then
+            GENHD_PATH="/usr/src/linux-headers-${STABLE_KERNEL}/include/linux/genhd.h"
+          elif [ -f "/lib/modules/${STABLE_KERNEL}/build/include/linux/genhd.h" ]; then
+            GENHD_PATH="/lib/modules/${STABLE_KERNEL}/build/include/linux/genhd.h"
+          fi
+          
+          if [ -n "$GENHD_PATH" ]; then
+            echo "✓ genhd.h found at: $GENHD_PATH (kernel < 6.8)"
+          else
+            echo "::info::genhd.h not found - checking if disk_to_dev is in blkdev.h (kernel >= 6.8)"
+            # Check if disk_to_dev macro is available in blkdev.h (newer kernels)
+            if grep -q "disk_to_dev" \
+               /usr/src/linux-headers-${STABLE_KERNEL}-generic/include/linux/blkdev.h 2>/dev/null || \
+               grep -q "disk_to_dev" \
+               /lib/modules/${STABLE_KERNEL}/build/include/linux/blkdev.h 2>/dev/null; then
+              echo "✓ disk_to_dev found in blkdev.h (kernel >= 6.8, genhd.h not needed)"
+            else
+              echo "::warning::disk_to_dev not found in blkdev.h"
+              echo "Note: Code uses LINUX_VERSION_CODE to handle kernel version differences"
+            fi
+          fi
+          
+          echo "version=$STABLE_KERNEL" >> $GITHUB_OUTPUT
+          echo "✓ Installed generic kernel headers version: $STABLE_KERNEL"
+          
+          # Find the actual kernel module directory (may be ${STABLE_KERNEL}-generic)
+          KERNEL_MODULE_DIR=""
+          if [ -d "/lib/modules/${STABLE_KERNEL}-generic/build" ]; then
+            KERNEL_MODULE_DIR="${STABLE_KERNEL}-generic"
+          elif [ -d "/lib/modules/$STABLE_KERNEL/build" ]; then
+            KERNEL_MODULE_DIR="$STABLE_KERNEL"
+          else
+            # Try to find any matching directory
+            KERNEL_MODULE_DIR=$(ls -1d /lib/modules/${STABLE_KERNEL}* 2>/dev/null | head -1 | xargs basename)
+            if [ -z "$KERNEL_MODULE_DIR" ] || [ ! -d "/lib/modules/$KERNEL_MODULE_DIR/build" ]; then
+              echo "::error::Could not find kernel module directory for $STABLE_KERNEL"
+              echo "Available directories:"
+              ls -la /lib/modules/ || echo "No modules directory found"
+              exit 1
+            fi
+          fi
+          echo "kernel_module_dir=$KERNEL_MODULE_DIR" >> $GITHUB_OUTPUT
+          echo "✓ Found kernel module directory: $KERNEL_MODULE_DIR"
+
+      - name: Verify kernel headers
+        run: |
+          STABLE_KERNEL="${{ steps.kernel_headers.outputs.version }}"
+          KERNEL_MODULE_DIR="${{ steps.kernel_headers.outputs.kernel_module_dir }}"
+          echo "Verifying kernel headers for version: $STABLE_KERNEL"
+          echo "Kernel module directory: $KERNEL_MODULE_DIR"
+          
+          # Check if build directory exists
+          if [ -d "/lib/modules/$KERNEL_MODULE_DIR/build" ]; then
+            echo "✓ Kernel headers found at /lib/modules/$KERNEL_MODULE_DIR/build"
+          elif [ -L "/lib/modules/$KERNEL_MODULE_DIR/build" ]; then
+            echo "✓ Kernel headers symlink found at /lib/modules/$KERNEL_MODULE_DIR/build"
+            ls -la /lib/modules/$KERNEL_MODULE_DIR/build
+          else
+            echo "::error::Kernel headers not found for version $STABLE_KERNEL (dir: $KERNEL_MODULE_DIR)"
+            echo "Checking available kernel modules:"
+            ls -la /lib/modules/ || echo "No modules directory found"
+            echo "Checking installed headers:"
+            dpkg -l | grep linux-headers || echo "No headers packages found"
+            exit 1
+          fi
+          
+          # Verify Makefile exists in build directory
+          if [ ! -f "/lib/modules/$KERNEL_MODULE_DIR/build/Makefile" ]; then
+            echo "::error::Kernel build Makefile not found"
+            exit 1
+          fi
+          echo "✓ Kernel build Makefile found"
+          echo "Building against kernel version: $STABLE_KERNEL (dir: $KERNEL_MODULE_DIR)"
+
+      - name: Build kernel module
+        env:
+          KDIR: /lib/modules/${{ steps.kernel_headers.outputs.kernel_module_dir }}/build
+        run: |
+          echo "Building kernel module against: $KDIR"
+          make modules
+          if [ ! -f "kernel/file_to_pcie.ko" ]; then
+            echo "::error::Kernel module build failed"
+            exit 1
+          fi
+          echo "✓ Kernel module built successfully"
+          ls -lh kernel/file_to_pcie.ko
+
+      - name: Build userspace program
+        run: |
+          make user/test_file_to_pcie
+          if [ ! -f "user/test_file_to_pcie" ]; then
+            echo "::error::Userspace program build failed"
+            exit 1
+          fi
+          echo "✓ Userspace program built successfully"
+          ls -lh user/test_file_to_pcie
+
+      - name: Verify module info
+        run: |
+          modinfo kernel/file_to_pcie.ko || true
+
+      - name: Check module dependencies
+        run: |
+          modinfo -F depends kernel/file_to_pcie.ko || echo "No dependencies"
+
+      - name: Test userspace program compilation
+        run: |
+          # Verify the program was built correctly
+          file user/test_file_to_pcie
+          # Check if it's a valid ELF binary
+          if ! file user/test_file_to_pcie | grep -q "ELF"; then
+            echo "::error::Userspace program is not a valid ELF binary"
+            exit 1
+          fi
+
+      - name: Clean build artifacts
+        if: always()
+        run: |
+          make clean
+
