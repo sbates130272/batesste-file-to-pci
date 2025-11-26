@@ -19,4 +19,5 @@ kernel/.tmp_versions/
 kernel/Module.symvers
 kernel/modules.order
 user/test_file_to_pcie
+wordlist.dic
 

@@ -14,8 +14,16 @@
 #include <linux/device.h>
 #include <linux/uaccess.h>
 #include <linux/blkdev.h>
-#include <linux/genhd.h>
 #include <linux/pci.h>
+#include <linux/version.h>
+
+/* genhd.h provides disk_to_dev macro in older kernels */
+/* In kernel 6.8+, genhd.h was removed and disk_to_dev moved to blkdev.h */
+/* Check kernel version: KERNEL_VERSION(major, minor, patch) */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 8, 0)
+#include <linux/genhd.h>
+#endif
+/* For kernel 6.8+, disk_to_dev is already defined in blkdev.h */
 #include <linux/slab.h>
 #include <linux/errno.h>
 #include <linux/fdtable.h>
@@ -149,8 +157,7 @@ static struct block_device *get_block_device_from_file(
     /* Case 1: Block device file (e.g., /dev/sda1, /dev/md0) */
     if (S_ISBLK(inode->i_mode)) {
         bdev = I_BDEV(inode);
-        if (bdev)
-            bdget(bdev->bd_dev);
+        /* I_BDEV already gives us a valid reference, no need for bdget */
         return bdev;
     }
 
@@ -171,7 +178,7 @@ static struct block_device *get_block_device_from_file(
         /* Get the underlying block device from the superblock */
         if (sb->s_bdev) {
             bdev = sb->s_bdev;
-            bdget(bdev->bd_dev);
+            /* sb->s_bdev already holds a reference, no need for bdget */
         }
     }
 
@@ -271,10 +278,14 @@ static int find_pcie_devices_for_bdev(struct block_device *bdev,
     if (ret < 0)
         return ret;
 
-    /* Get the gendisk from the block device */
+    /* Get the device from the block device */
     if (!bdev->bd_disk)
         return -ENODEV;
 
+    /* disk_to_dev macro:
+     * - In kernels < 6.8: defined in genhd.h as &disk->part0.__dev
+     * - In kernels >= 6.8: defined in blkdev.h as &disk->part0->bd_device
+     */
     dev = disk_to_dev(bdev->bd_disk);
     if (!dev)
         return -ENODEV;
@@ -386,8 +397,7 @@ static long file_to_pcie_ioctl(struct file *filp, unsigned int cmd,
     ret = 0; /* Success */
 
 out_bdev:
-    if (bdev)
-        bdput(bdev);
+    /* No need to bdput - we didn't take an extra reference */
 out_file:
     if (target_file)
         fput(target_file);
@@ -438,7 +448,12 @@ static int __init file_to_pcie_init(void)
     }
 
     /* Create device class */
+    /* In kernel 6.8+, class_create only takes the class name */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 8, 0)
+    file_to_pcie_class = class_create(CLASS_NAME);
+#else
     file_to_pcie_class = class_create(THIS_MODULE, CLASS_NAME);
+#endif
     if (IS_ERR(file_to_pcie_class)) {
         pr_err("Failed to create device class\n");
         cdev_del(&file_to_pcie_cdev);
