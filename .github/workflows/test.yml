@@ -1,0 +1,39 @@
+name: test
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'kernel/**'
+      - 'user/**'
+      - 'include/**'
+      - 'Makefile'
+      - '.github/workflows/test.yml'
+      - 'scripts/**'
+
+jobs:
+  test:
+    name: Test with QEMU and 6 NVMe SSDs
+    runs-on: ubuntu-latest
+    container:
+      image: docker.io/sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4.2.2
+
+      - name: Install jq
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq jq
+
+      - name: Run QEMU tests
+        env:
+          CI: true
+          GITHUB_WORKSPACE: ${{ github.workspace }}
+        run: |
+          # The Docker image should have QEMU and run-vm script available
+          # The container: syntax automatically mounts the workspace
+          scripts/run-qemu-tests.sh
+
