@@ -18,10 +18,15 @@ clean:
 	$(MAKE) -C $(KDIR) M=$(KERNEL_DIR) clean
 	rm -f user/test_file_to_pcie
 
-install: modules
+install:
+	@if [ ! -f $(KERNEL_DIR)/file_to_pcie.ko ]; then \
+		echo "Error: Module not built. Run 'make modules' first (without sudo)."; \
+		exit 1; \
+	fi
 	$(MAKE) -C $(KDIR) M=$(KERNEL_DIR) modules_install
 
 uninstall:
+	rm -f /lib/modules/$(shell uname -r)/updates/file_to_pcie.ko
 	rm -f /lib/modules/$(shell uname -r)/extra/file_to_pcie.ko
 	depmod -a
 
