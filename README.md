@@ -56,6 +56,9 @@ The module supports two types of file descriptors:
 
 ## Building
 
+**Important**: Kernel modules should be built as a regular user (without sudo).
+Only installation and loading require sudo privileges.
+
 ### Build Everything
 
 Build both the kernel module and userspace test program:
@@ -74,6 +77,10 @@ This will create:
 make modules
 ```
 
+**Note**: Do not use `sudo` when building. Building as root may fail due to
+security restrictions preventing root from creating directories in user home
+directories.
+
 ### Build Only the Test Program
 
 ```bash
@@ -90,18 +97,19 @@ gcc -I. -o user/test_file_to_pcie user/test_file_to_pcie.c
 
 ### Install the Module
 
-After building, install the module to the system:
+After building (as a regular user), install the module to the system:
 
 ```bash
 sudo make install
 ```
 
 This will:
-- Install the module to `/lib/modules/$(uname -r)/extra/file_to_pcie.ko`
+- Install the module to `/lib/modules/$(uname -r)/updates/file_to_pcie.ko`
 - Update module dependencies with `depmod -a`
 - Make the module available for loading with `modprobe`
 
-**Note**: The module must be built before installation. Run `make` first.
+**Note**: The module must be built before installation. Run `make modules` first
+(without sudo), then `sudo make install`.
 
 ### Verify Installation
 
@@ -181,7 +189,7 @@ sudo make uninstall
 ```
 
 This will:
-- Remove the module from `/lib/modules/$(uname -r)/extra/`
+- Remove the module from `/lib/modules/$(uname -r)/updates/` and `/lib/modules/$(uname -r)/extra/`
 - Update module dependencies with `depmod -a`
 
 **Note**: Unload the module first before uninstalling.
