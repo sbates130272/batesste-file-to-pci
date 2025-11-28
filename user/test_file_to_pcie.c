@@ -101,11 +101,26 @@ int main(int argc, char *argv[])
     }
 
     /* Open the target file */
-    file_fd = open(argv[1], O_RDONLY);
+    /* Use O_RDWR to ensure filesystem is fully initialized */
+    /* Some filesystems may not populate sb->s_bdev until write access */
+    file_fd = open(argv[1], O_RDWR);
     if (file_fd < 0) {
-        perror("Failed to open target file");
-        close(dev_fd);
-        return 1;
+        /* Fallback to O_RDONLY if O_RDWR fails */
+        file_fd = open(argv[1], O_RDONLY);
+        if (file_fd < 0) {
+            perror("Failed to open target file");
+            close(dev_fd);
+            return 1;
+        }
+    }
+
+    /* Ensure file is accessible and filesystem is initialized */
+    /* This may be needed for some filesystems to populate sb->s_bdev */
+    {
+        char buf[1];
+        if (pread(file_fd, buf, 1, 0) < 0 && errno != EISDIR) {
+            /* Ignore errors, but this ensures filesystem is accessed */
+        }
     }
 
     /* Prepare request */
